@@ -1,6 +1,7 @@
 services:
   kiro2api:
-    image: ghcr.io/caidaoli/kiro2api:latest
+    build: .
+    image: kiro2api-local:latest
     container_name: kiro2api
     restart: unless-stopped
     ports:
