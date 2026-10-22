@@ -76,7 +76,7 @@ func handleRequestBuildError(c *gin.Context, err error) {
 	var conv *conversionError
 	if errors.As(err, &conv) {
 		logger.Warn("请求转换失败", addReqFields(c, logger.Err(err))...)
-		writeAPIError(c, http.StatusBadRequest, "invalid_request", "请求无法转换为 Kiro 格式: "+conv.Error(), "")
+		writeAPIError(c, http.StatusBadRequest, "invalid_request", "请求无法转换为上游格式: "+conv.Error(), "")
 		return
 	}
 	logger.Error("构建请求失败", addReqFields(c, logger.Err(err))...)
@@ -91,7 +91,7 @@ func handleRequestSendError(c *gin.Context, err error) {
 		return
 	}
 	logger.Error("发送请求失败", addReqFields(c, logger.Err(err))...)
-	writeAPIError(c, http.StatusBadGateway, "upstream_unreachable", "无法连接 Kiro 上游，请稍后重试", "2")
+	writeAPIError(c, http.StatusBadGateway, "upstream_unreachable", "无法连接上游，请稍后重试", "2")
 }
 
 func handleResponseReadError(c *gin.Context, err error) {

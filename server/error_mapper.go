@@ -54,21 +54,21 @@ func MapUpstreamError(status int, body []byte) UpstreamError {
 	switch {
 	case status == http.StatusBadRequest && reason == "CONTENT_LENGTH_EXCEEDS_THRESHOLD":
 		// "prompt is too long" is the phrase clients such as Claude Code look for to compact.
-		return UpstreamError{Status: 400, Code: "context_length_exceeded", Message: "prompt is too long: 输入超出模型上下文上限（Kiro: " + msg + "），请压缩或缩短对话后重试"}
+		return UpstreamError{Status: 400, Code: "context_length_exceeded", Message: "prompt is too long: 输入超出模型上下文上限（上游: " + msg + "），请压缩或缩短对话后重试"}
 	case status == http.StatusBadRequest:
-		return UpstreamError{Status: 400, Code: "invalid_request", Message: "Kiro 拒绝了请求: " + msg}
+		return UpstreamError{Status: 400, Code: "invalid_request", Message: "上游拒绝了请求: " + msg}
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
 		return UpstreamError{Status: 503, Code: "upstream_account_auth", Message: "上游账号认证失败，已暂停该账号，请重试", RetryAfter: "1"}
 	case status == http.StatusPaymentRequired:
 		return UpstreamError{Status: 429, Code: "upstream_quota", Message: "上游账号额度已用完，已暂停该账号，请重试", RetryAfter: "1"}
 	case status == http.StatusTooManyRequests:
-		return UpstreamError{Status: 429, Code: "upstream_rate_limited", Message: "Kiro 上游限流，请稍后重试", RetryAfter: "5"}
+		return UpstreamError{Status: 429, Code: "upstream_rate_limited", Message: "上游限流，请稍后重试", RetryAfter: "5"}
 	case status == http.StatusRequestEntityTooLarge:
 		return UpstreamError{Status: 413, Code: "request_too_large", Message: "请求体过大: " + msg}
 	case status >= 400 && status < 500:
-		return UpstreamError{Status: 400, Code: "invalid_request", Message: fmt.Sprintf("Kiro 拒绝了请求（HTTP %d）: %s", status, msg)}
+		return UpstreamError{Status: 400, Code: "invalid_request", Message: fmt.Sprintf("上游拒绝了请求（HTTP %d）: %s", status, msg)}
 	default:
-		return UpstreamError{Status: 502, Code: "upstream_error", Message: fmt.Sprintf("Kiro 上游服务错误（HTTP %d），请稍后重试", status)}
+		return UpstreamError{Status: 502, Code: "upstream_error", Message: fmt.Sprintf("上游服务错误（HTTP %d），请稍后重试", status)}
 	}
 }
 

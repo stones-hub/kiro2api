@@ -52,6 +52,9 @@ func TestBuildCodeWhispererRequest_EmptyMessages(t *testing.T) {
 }
 
 func TestBuildCodeWhispererRequest_WithSystemMessage(t *testing.T) {
+	// 身份声明的注入行为由 identity_prompt_test.go 覆盖，这里只测 system 透传
+	withIdentityPrompt(t, "off")
+
 	anthropicReq := types.AnthropicRequest{
 		Model:     "claude-sonnet-4-20250514",
 		MaxTokens: 1024,

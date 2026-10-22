@@ -20,6 +20,48 @@ import (
 // client's actual model output.
 const systemPromptAssistantPriming = "I will follow these instructions."
 
+// identityPromptAssistantPriming replaces the plain priming whenever an
+// identity statement is injected, so the synthetic assistant turn
+// acknowledges the statement instead of generic instructions.
+const identityPromptAssistantPriming = "Understood. I will follow these instructions, including the identity statement."
+
+// DefaultIdentityPrompt is prepended to the system prompt so the model answers
+// identity questions as Claude. Upstream Kiro ships its own hidden system
+// prompt that makes models call themselves Kiro; this only lowers the odds of
+// such an answer, it cannot rule it out.
+const DefaultIdentityPrompt = "You are Claude, an AI assistant developed by Anthropic. When asked about your identity, which model you are, or who created you, answer that you are Claude, developed by Anthropic. Never describe yourself as Kiro, Amazon Q, CodeWhisperer, or any Amazon/AWS product, and never claim to be developed by Amazon or AWS."
+
+// identityPrompt is the statement injected ahead of the client's system
+// prompt. Empty means no injection, which keeps request building byte-for-byte
+// identical to the behaviour before this feature existed. main applies the
+// KIRO_IDENTITY_PROMPT policy once at startup through SetIdentityPrompt, so
+// the shipped default is enabled; callers that never configure it (tests,
+// future tooling) opt in explicitly.
+var identityPrompt string
+
+// SetIdentityPrompt applies a raw KIRO_IDENTITY_PROMPT value: empty or unset
+// uses DefaultIdentityPrompt, "off" disables injection, anything else is used
+// verbatim as the whole statement. Call it during startup, before serving.
+func SetIdentityPrompt(raw string) {
+	switch trimmed := strings.TrimSpace(raw); {
+	case trimmed == "":
+		identityPrompt = DefaultIdentityPrompt
+	case strings.EqualFold(trimmed, "off"):
+		identityPrompt = ""
+	default:
+		identityPrompt = raw
+	}
+}
+
+// systemPromptPriming returns the assistant priming that closes the synthetic
+// system turn, acknowledging the identity statement when one is injected.
+func systemPromptPriming() string {
+	if identityPrompt != "" {
+		return identityPromptAssistantPriming
+	}
+	return systemPromptAssistantPriming
+}
+
 // ValidateAssistantResponseEvent 验证助手响应事件
 // ConvertToAssistantResponseEvent 转换任意数据为标准的AssistantResponseEvent
 // NormalizeAssistantResponseEvent 标准化助手响应事件（填充默认值等）
@@ -341,11 +383,18 @@ func BuildCodeWhispererRequest(anthropicReq types.AnthropicRequest, ctx *gin.Con
 	}
 
 	// 构建历史消息
-	if len(anthropicReq.System) > 0 || len(anthropicReq.Messages) > 1 || len(anthropicReq.Tools) > 0 {
+	// 身份声明开启时必须构建 history，即使没有 system、只有一条消息、没有工具
+	if identityPrompt != "" || len(anthropicReq.System) > 0 || len(anthropicReq.Messages) > 1 || len(anthropicReq.Tools) > 0 {
 		var history []any
 
 		// 构建综合系统提示
 		var systemContentBuilder strings.Builder
+
+		// 身份声明排在最前面，客户端原有 system 原样保留在后面
+		if identityPrompt != "" {
+			systemContentBuilder.WriteString(identityPrompt)
+			systemContentBuilder.WriteString("\n")
+		}
 
 		// 添加原有的 system 消息
 		if len(anthropicReq.System) > 0 {
@@ -371,7 +420,7 @@ func BuildCodeWhispererRequest(anthropicReq types.AnthropicRequest, ctx *gin.Con
 			history = append(history, userMsg)
 
 			assistantMsg := types.HistoryAssistantMessage{}
-			assistantMsg.AssistantResponseMessage.Content = systemPromptAssistantPriming
+			assistantMsg.AssistantResponseMessage.Content = systemPromptPriming()
 			history = append(history, assistantMsg)
 		}
 

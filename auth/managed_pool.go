@@ -101,7 +101,7 @@ type AccountPool struct {
 }
 
 var ErrPoolBusy = errors.New("账号并发已满，请稍后重试")
-var ErrPoolUnavailable = errors.New("没有可用的 Kiro 账号，请检查额度或账号状态")
+var ErrPoolUnavailable = errors.New("没有可用的上游账号，请检查额度或账号状态")
 
 const maxWaitingRequests = 256
 

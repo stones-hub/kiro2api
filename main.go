@@ -7,6 +7,7 @@ import (
 
 	"kiro2api/auth"
 	"kiro2api/config"
+	"kiro2api/converter"
 	"kiro2api/logger"
 	"kiro2api/server"
 
@@ -31,6 +32,10 @@ func main() {
 	logger.Debug("日志系统初始化完成",
 		logger.String("config_level", os.Getenv("LOG_LEVEL")),
 		logger.String("config_file", os.Getenv("LOG_FILE")))
+
+	// Identity statement injected ahead of the client's system prompt.
+	// Unset or empty keeps the built-in statement; "off" disables injection.
+	converter.SetIdentityPrompt(os.Getenv("KIRO_IDENTITY_PROMPT"))
 
 	// How long a continued conversation waits for its busy account (seconds).
 	if raw, present := os.LookupEnv("KIRO_STICKY_WAIT_SECONDS"); present {
