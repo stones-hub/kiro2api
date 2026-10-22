@@ -463,7 +463,6 @@ curl -N -H "Authorization: Bearer $KIRO_CLIENT_TOKEN" \
 
 ## 更多资源
 
-- **详细开发指南**: [CLAUDE.md](./CLAUDE.md)
 - **包结构说明**: 分层架构设计，遵循 SOLID 原则
 - **性能优化**: 缓存策略、并发控制、内存管理
 - **核心开发任务**: 扩展功能、性能调优、高级特性
