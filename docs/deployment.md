@@ -222,13 +222,11 @@ sudo chmod 600 /etc/nginx/conf.d/kiro2api.conf && sudo nginx -t && sudo systemct
 ssh -p <SSH端口> -N -o ExitOnForwardFailure=yes -L 127.0.0.1:19003:127.0.0.1:9003 root@<服务器IP>
 ```
 
-例如，之前使用的服务器连接命令如下（同样在你自己的电脑上执行）：
+需要排查连接或认证问题时，加上 `-v` 输出详细连接日志（同样在你自己的电脑上执行）：
 
 ```bash
-ssh -v -p 25635 -N -o ExitOnForwardFailure=yes -L 127.0.0.1:19003:127.0.0.1:9003 root@128.241.249.239
+ssh -v -p <SSH端口> -N -o ExitOnForwardFailure=yes -L 127.0.0.1:19003:127.0.0.1:9003 root@<服务器IP>
 ```
-
-其中 `25635` 是 SSH 端口，`128.241.249.239` 是服务器 IP；更换服务器时替换为实际值。`-v` 会输出详细连接日志，方便排查连接或认证问题，不需要日志时可以去掉。
 
 - SSH 不是 `22` 端口时必须带 `-p`。
 - 输入密码后窗口停住、没有任何输出是正常的，`-N` 表示只建隧道，不打开命令行。保持窗口不要关。
