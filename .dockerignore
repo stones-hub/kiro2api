@@ -44,3 +44,10 @@ kiro2api
 
 # Dependencies (will be downloaded during build)
 vendor/
+
+# 本机 Compose 持久化数据（账号池、使用记录 jsonl、备份），不进入构建上下文
+data/
+
+# 任务书/交接文档，不进入构建上下文
+.pi/
+HANDOVER.md

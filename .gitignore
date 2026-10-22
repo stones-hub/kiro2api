@@ -20,6 +20,9 @@ temp/
 # 测试数据
 test/raw_data_replay/
 
+# 本机 Compose 持久化数据（账号池、使用记录 jsonl、备份等，不入库）
+data/
+
 # IDE 和系统文件
 .DS_Store
 .serena

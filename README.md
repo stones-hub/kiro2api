@@ -197,87 +197,27 @@ curl -X POST http://localhost:8080/v1/messages \
 
 ### Docker 部署
 
-#### 快速开始
-
-Token获取方式：
-- Social tokens: 通常在 ~/.aws/sso/cache/kiro-auth-token.json
-- IdC tokens: 在 ~/.aws/sso/cache/ 目录下的相关JSON文件中
+本仓库的 `docker-compose.yml` 面向**本机源码构建**场景：固定从当前源码 `build`，只绑定 `127.0.0.1:18080`（API）和 `127.0.0.1:18081`（管理页面），不对外网暴露端口。完整的分步说明（生成密钥、准备数据目录、SSH 隧道访问远程主机、验证、备份等）见 [docs/deployment.md](./docs/deployment.md)。
 
 ```bash
-# 方式一：使用 docker-compose（推荐）
-docker-compose up -d
+cp .env.example .env
+# 编辑 .env，填入 KIRO_CLIENT_TOKEN 和 KIRO_ADMIN_SECRET（两个不同的随机密钥，管理密钥 >= 32 字符）
+chmod 600 .env
+sudo mkdir -p data && sudo chown 1001:1001 data && sudo chmod 700 data
 
-# 方式二：预构建镜像
-docker run -d \
-  --name kiro2api \
-  -p 8080:8080 \
-  -e KIRO_AUTH_TOKEN='[{"auth":"Social","refreshToken":"your_token"}]' \
-  -e KIRO_CLIENT_TOKEN="123456" \
-  ghcr.io/caidaoli/kiro2api:latest
-
-# 方式三：本地构建
-docker build -t kiro2api .
-docker run -d \
-  --name kiro2api \
-  -p 8080:8080 \
-  --env-file .env \
-  kiro2api
+docker compose up --build -d
 ```
 
-#### 配置管理
+容器内进程以 uid/gid `1001:1001` 运行，`data/` 目录权限必须正确（属主和权限如上），否则容器无法读写账号池数据，会启动失败或静默丢数据。
 
-##### 环境变量文件
-```bash
-# .env.docker
-# 多账号池配置
-KIRO_AUTH_TOKEN='[
-  {
-    "auth": "Social",
-    "refreshToken": "arn:aws:sso:us-east-1:999999999999:token/refresh/xxx"
-  },
-  {
-    "auth": "IdC",
-    "refreshToken": "arn:aws:identitycenter::us-east-1:999999999999:account/instance/xxx",
-    "clientId": "https://oidc.us-east-1.amazonaws.com/clients/xxx",
-    "clientSecret": "xxx-secret-key-xxx"
-  }
-]'
+默认账号池为空，可以正常启动；通过 `http://127.0.0.1:18081` 管理页面添加账号后才能进行真实推理。管理端口上的所有请求（页面、静态资源、`/api/*`、`/healthz`）都需要 `X-Kiro-Admin-Token` 头，没有这个头一律 401，浏览器直接访问也不例外。不建议直接使用上游预构建镜像或把管理端口暴露到公网，详见部署文档中的安全说明。
 
-# 服务配置
-KIRO_CLIENT_TOKEN=your-secure-token
-PORT=8080
-GIN_MODE=release
-
-# 生产级日志
-LOG_LEVEL=info
-LOG_FORMAT=json
-LOG_CONSOLE=true
-
-```
-
-##### Docker Secrets（注意事项）
-```bash
-# 若使用 Docker Secrets，请将 `KIRO_AUTH_TOKEN` 设置为 secrets 文件路径：
-# 例如：/run/secrets/kiro_auth_token
-#
-# 说明：代码支持将 `KIRO_AUTH_TOKEN` 当作"文件路径"读取；
-#      但不支持 `*_FILE` 环境变量约定，也不读取 `KIRO_CLIENT_TOKEN_FILE`。
-```
-
-#### 健康检查和监控
+#### 查看日志和状态
 
 ```bash
-# 健康检查
-docker exec kiro2api wget -qO- http://localhost:8080/v1/models
-
-# 查看日志
-docker logs -f kiro2api
-
-# 监控资源使用
+docker compose logs -f kiro2api
+docker compose ps
 docker stats kiro2api
-
-# 进入容器调试
-docker exec -it kiro2api sh
 ```
 
 ## API 接口
@@ -291,6 +231,8 @@ docker exec -it kiro2api sh
 - `POST /v1/messages` - Anthropic Claude API 兼容接口（支持流/非流）
 - `POST /v1/messages/count_tokens` - Token 计数接口
 - `POST /v1/chat/completions` - OpenAI ChatCompletion API 兼容接口（支持流/非流）
+
+以上 `/api/tokens` 是运行在主服务端口（默认 8080）上的旧版只读端点，和管理模式（`KIRO_ADMIN_DATA_DIR`）下运行在独立管理端口上的 `/api/*` 账号管理接口是两套不同的东西：管理端口上的 `/api/*`（以及页面本身和 `/healthz`）全部需要 `X-Kiro-Admin-Token` 头，详见 [docs/deployment.md](./docs/deployment.md)。
 
 ### 认证方式
 
@@ -478,24 +420,21 @@ curl -N --max-time 60 -X POST \
 ```bash
 # Docker 故障排除命令
 # 查看容器状态
-docker ps -a
+docker compose ps
 
 # 查看容器日志
-docker logs kiro2api --tail 100 -f
+docker compose logs kiro2api --tail 100 -f
 
-# 检查容器内部
+# 检查容器内部（注意：不要用 env | grep KIRO 之类的命令打印密钥，容易把 KIRO_CLIENT_TOKEN/KIRO_ADMIN_SECRET 明文记录到终端或日志里）
 docker exec -it kiro2api sh
 ps aux
 netstat -tlnp
-env | grep KIRO
 
-# 检查服务连通性（本地）
-docker exec kiro2api wget -qO- http://localhost:8080/v1/models || echo "服务不可用"
+# 检查服务连通性（本地，需要客户端密钥，未授权会返回401）
+docker exec kiro2api sh -c 'wget -qO- --header="Authorization: Bearer $KIRO_CLIENT_TOKEN" http://localhost:8080/v1/models' || echo "服务不可用"
 
-# 重新构建和启动
-docker-compose down -v
-docker-compose build --no-cache
-docker-compose up -d
+# 重新构建和启动（保留 ./data 数据目录，不要使用 down -v 删除数据卷）
+docker compose up --build -d
 
 # 检查资源使用
 docker stats kiro2api
