@@ -38,6 +38,24 @@ openssl rand -hex 32
 chmod 600 .env
 ```
 
+`docker-compose.yml` 通过 `env_file: - .env` 把 `.env` 里的**全部**变量传进容器，不需要在 `environment` 里逐个列出新变量。但 `environment` 的优先级高于 `env_file`，所以下面这几项由 Compose 固定覆盖，在 `.env` 里改它们不起作用：
+
+- `PORT=8080`、`BIND_HOST=0.0.0.0`、`KIRO_ADMIN_BIND=0.0.0.0:8081` — 容器内部监听，宿主机端口由 `ports` 映射决定
+- `KIRO_ADMIN_DATA_DIR=/app/data` — 容器内数据目录，对应挂载的 `./data`
+
+`.env` 里的可选变量要么整行不写（用代码里的默认值），要么写合法值。程序用 `LookupEnv` 读取 `KIRO_LOCAL_CACHE_*` 和 `KIRO_STICKY_WAIT_SECONDS`：变量存在但值为空（如 `KIRO_LOCAL_CACHE_MAX_PERCENT=`）会解析失败并直接退出，容器起不来。各变量的取值范围见 `.env.example`，这里只说效果：
+
+- `KIRO_LOCAL_CACHE_DISCOUNT=true` 才启用本地缓存折算，默认关闭。启用后，命中的请求会把一部分 input token 记成 `cache_read`，下游（如 NewAPI）才能看到缓存 token。
+- 命中需要同时满足：5 分钟内、同一 API Key（及 `metadata.user_id`）、请求前缀重复。首次请求不会显示缓存。
+- 这是本地计费折算，不是上游的真实缓存计量，上游实际消耗不受它影响。
+- `KIRO_STICKY_WAIT_SECONDS` 控制续接对话等待原账号的秒数（默认 10），上游 prompt cache 按账号隔离，换账号会让下一轮消耗大致翻倍。
+
+改完 `.env` 必须重建容器才会生效，`docker compose restart` 不会重新读取环境变量：
+
+```bash
+docker compose up -d --force-recreate kiro2api
+```
+
 `KIRO_AUTH_TOKEN` 默认只支持两种取值：留空，或直接写 JSON 字符串。如果想把它设置为"容器内文件路径"，那个路径必须真实存在于容器里，而本 `docker-compose.yml` 只挂载了 `./data:/app/data`，并不会自动挂载任意主机路径；要用文件路径方式，需要自己在 `docker-compose.yml` 里额外加一条 volumes 挂载（本任务未新增，默认场景下不要配置成文件路径）。
 
 ## 3. 准备数据目录
@@ -72,6 +90,8 @@ docker compose up --build -d
 ```bash
 ssh -N -L 18080:127.0.0.1:18080 -L 18081:127.0.0.1:18081 user@remote-host
 ```
+
+上面的命令把远程端口映射到本地同号端口。如果本地端口被占用，换成别的端口（例如 `-L 19003:127.0.0.1:18081`），那么 `KIRO_ADMIN_ORIGINS` 也要跟着改：它的值必须与浏览器地址栏里的来源**完全一致**，协议、主机、端口三者都要对得上。用本地 19003 访问管理页面就填 `http://127.0.0.1:19003`；填成 `http://127.0.0.1:18081`（端口不符）或 `http://localhost:19003`（主机名不符）都算不同来源，会被拒绝。
 
 隧道建立后，本地访问 `http://127.0.0.1:18080` 和 `http://127.0.0.1:18081` 等效于直接在远程机器本机访问端口。但这**只是网络层的端口转发**，隧道本身不注入、不携带任何认证信息：浏览器直接打开 `http://127.0.0.1:18081` 仍然会收到 401（管理页面要求 `X-Kiro-Admin-Token` 请求头，见下一节），不存在"隧道一建好页面就能用"的效果。本文档没有验证过通过隧道在浏览器里正常使用管理页面（需要浏览器能带上自定义头，通常要靠插件或受保护的反向代理，本任务未新增），下节提供命令行 curl 的验证步骤，尚未完成本次容器的运行验证。
 
@@ -115,6 +135,18 @@ docker compose logs -f kiro2api
 
 ```bash
 docker compose ps
+```
+
+核对容器里到底有哪些可选变量（只列变量名，不打印值，避免泄露密钥）：
+
+```bash
+docker exec kiro2api env | cut -d= -f1 | grep -E 'KIRO_LOCAL_CACHE|KIRO_STICKY'
+```
+
+没有输出说明这些变量没进容器：确认 `.env` 里相应行没被注释掉，并用下面的命令重建容器（`docker compose restart` 不会更新环境变量）：
+
+```bash
+docker compose up -d --force-recreate kiro2api
 ```
 
 备份数据：先停止服务，再把整个 `data/` 目录打包到**仓库外**的路径（不要在仓库目录下生成 `data.backup*` 之类的新目录，容易变成未被忽略、误入库的内容），最后再启动服务。下面的 `/path/to/backups` 只是占位符，替换成你机器上一个仓库之外、你有权限写入的目录：

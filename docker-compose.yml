@@ -7,6 +7,13 @@ services:
     ports:
       - "127.0.0.1:18080:8080"
       - "127.0.0.1:18081:8081"
+    # 把 .env 里的全部变量传进容器（可选配置如 KIRO_LOCAL_CACHE_*、
+    # KIRO_STICKY_WAIT_SECONDS、KIRO_MODELS_FILE 无需在下面逐个列出）。
+    # 这些变量用 LookupEnv 读取：不写即用默认值，写空值会启动失败，
+    # 所以不能改成 ${VAR:-} 形式逐个透传。
+    env_file:
+      - .env
+    # environment 优先级高于 env_file：下面的固定值不会被 .env 覆盖。
     environment:
       - BIND_HOST=0.0.0.0
       - PORT=8080
