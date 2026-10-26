@@ -73,6 +73,8 @@ KIRO_AUTH_TOKEN=
 KIRO_LOCAL_CACHE_DISCOUNT=true
 ```
 
+这个开关只决定要不要把本地折算结果报给客户端。续接对话回到上一轮那个账号（账号粘滞）始终生效，不需要打开它。
+
 说明：
 
 - Compose 通过 `env_file` 把 `.env` 里的全部变量传进容器。`PORT`、`BIND_HOST`、`KIRO_ADMIN_BIND`、`KIRO_ADMIN_DATA_DIR` 由 Compose 固定，在 `.env` 里改了也不生效。
@@ -281,6 +283,8 @@ kiro2api 同时接受 `Authorization: Bearer <Key>` 和 `x-api-key: <Key>`。
 命中条件是三个同时满足：5 分钟内、同一个 API Key（请求带 `metadata.user_id` 时还要同一个用户）、请求前缀与上一次相同。**第一次请求不会显示缓存**，同一对话的第二轮起才可能显示。
 
 这是 kiro2api 本地折算的计费数据，不是 Kiro 上游返回的真实缓存用量。
+
+关掉这个开关只是不再上报这些字段（也不再返回 `X-Kiro-Cache-Accounting` 响应头），响应里的 usage 与没有本地折算时完全一致。识别对话前缀的那套机制仍在工作，因为账号粘滞靠它把续接的对话送回上一轮那个账号，见 `KIRO_STICKY_WAIT_SECONDS`。
 
 核对缓存变量是否已传入容器，只列变量名，不打印值：
 

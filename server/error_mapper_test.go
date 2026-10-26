@@ -52,9 +52,14 @@ func TestUpstreamErrorReachesClientWithRealStatus(t *testing.T) {
 	c.Request = httptest.NewRequest("POST", "/v1/messages", nil)
 	resp := &http.Response{StatusCode: 400, Body: http.NoBody}
 	resp.Body = ioNopCloser(`{"message":"Input is too long.","reason":"CONTENT_LENGTH_EXCEEDS_THRESHOLD"}`)
-	if !handleCodeWhispererError(c, resp) {
+	fail := inspectUpstreamResponse(c, resp)
+	if fail == nil {
 		t.Fatal("error not handled")
 	}
+	if fail.retry {
+		t.Fatal("a request Kiro rejected was sent to another account")
+	}
+	fail.write(c)
 	var body struct {
 		Type  string
 		Error struct{ Type, Code, Message string }

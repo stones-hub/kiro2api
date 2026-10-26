@@ -123,15 +123,70 @@ func filterSupportedTools(tools []types.AnthropicTool) []types.AnthropicTool {
 	return filtered
 }
 
+// upstreamFailure is one failed try at Kiro: already recorded against the
+// serving account and ready to answer the client, but not yet written, so a
+// retry on another account can take its place. Exactly one failure per request
+// is ever written.
+type upstreamFailure struct {
+	err error
+	// write sends this failure to the client.
+	write func(c *gin.Context)
+	// clientStatus is the status write produces; it is what the failed
+	// account's statistics record when the request moves on.
+	clientStatus int
+	// retry marks the account, rather than the request itself, as what failed.
+	retry bool
+}
+
+// clientPresent reports whether the caller is still waiting for an answer.
+func clientPresent(c *gin.Context) bool {
+	return c.Request == nil || c.Request.Context().Err() == nil
+}
+
+// accountFailureStatus reports a Kiro status that blames the account rather
+// than the request, so the same request may still succeed on another account.
+func accountFailureStatus(status int) bool {
+	switch status {
+	case http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden, http.StatusTooManyRequests:
+		return true
+	}
+	return status >= 500
+}
+
+// executeCodeWhispererRequest sends the request to Kiro and, when the account
+// it went out on is what failed, sends it once more on another account. Nothing
+// has reached the client at that point — a stream commits its SSE headers only
+// after a 200 — so the client sees one answer: the retry's, or the original
+// failure when no other account was free.
 func executeCodeWhispererRequest(c *gin.Context, anthropicReq types.AnthropicRequest, tokenInfo types.TokenInfo, isStream bool) (*http.Response, error) {
+	resp, fail := attemptCodeWhispererRequest(c, anthropicReq, tokenInfo, isStream)
+	if fail == nil {
+		return resp, nil
+	}
+	if fail.retry {
+		if token, ok := switchAccountAfterFailure(c, fail.clientStatus); ok {
+			retried, retryFail := attemptCodeWhispererRequest(c, anthropicReq, token, isStream)
+			if retryFail == nil {
+				return retried, nil
+			}
+			// One retry only: the second failure is what the client is told.
+			fail = retryFail
+		}
+	}
+	fail.write(c)
+	return nil, fail.err
+}
+
+// attemptCodeWhispererRequest performs one try against Kiro.
+func attemptCodeWhispererRequest(c *gin.Context, anthropicReq types.AnthropicRequest, tokenInfo types.TokenInfo, isStream bool) (*http.Response, *upstreamFailure) {
 	req, err := buildCodeWhispererRequest(c, anthropicReq, tokenInfo, isStream)
 	if err != nil {
-		// 检查是否是模型未找到错误，如果是，则响应已经发送，不需要再次处理
+		// 模型未找到：响应已在构建阶段发送，不需要再次处理
 		if _, ok := err.(*types.ModelNotFoundErrorType); ok {
-			return nil, err
+			return nil, &upstreamFailure{err: err, clientStatus: http.StatusBadRequest, write: func(*gin.Context) {}}
 		}
-		handleRequestBuildError(c, err)
-		return nil, err
+		return nil, &upstreamFailure{err: err, clientStatus: http.StatusBadRequest,
+			write: func(c *gin.Context) { handleRequestBuildError(c, err) }}
 	}
 
 	resp, err := utils.DoRequest(req)
@@ -140,16 +195,18 @@ func executeCodeWhispererRequest(c *gin.Context, anthropicReq types.AnthropicReq
 		if utils.IsProxyError(err) {
 			recordAccountProxyError(c)
 			logger.Error("账号代理连接失败", addReqFields(c, logger.Err(err))...)
-			respondError(c, http.StatusBadGateway, "%s", "账号代理连接失败，请稍后重试")
-			return nil, err
+			return nil, &upstreamFailure{err: err, retry: clientPresent(c), clientStatus: http.StatusBadGateway,
+				write: func(c *gin.Context) {
+					respondError(c, http.StatusBadGateway, "%s", "账号代理连接失败，请稍后重试")
+				}}
 		}
-		handleRequestSendError(c, err)
-		return nil, err
+		return nil, &upstreamFailure{err: err, retry: clientPresent(c), clientStatus: http.StatusBadGateway,
+			write: func(c *gin.Context) { handleRequestSendError(c, err) }}
 	}
 
-	if handleCodeWhispererError(c, resp) {
+	if fail := inspectUpstreamResponse(c, resp); fail != nil {
 		resp.Body.Close()
-		return nil, fmt.Errorf("CodeWhisperer API error")
+		return nil, fail
 	}
 
 	// 上游响应成功，记录方向与会话
@@ -226,11 +283,12 @@ func buildCodeWhispererRequest(c *gin.Context, anthropicReq types.AnthropicReque
 	return req, nil
 }
 
-// handleCodeWhispererError 处理CodeWhisperer API错误响应 (重构后符合SOLID原则)
-func handleCodeWhispererError(c *gin.Context, resp *http.Response) bool {
+// inspectUpstreamResponse records what Kiro answered against the serving
+// account and classifies a non-200 for the client without answering yet.
+func inspectUpstreamResponse(c *gin.Context, resp *http.Response) *upstreamFailure {
 	recordAccountUpstream(c, resp.StatusCode)
 	if resp.StatusCode == http.StatusOK {
-		return false
+		return nil
 	}
 
 	body, err := io.ReadAll(resp.Body)
@@ -240,8 +298,8 @@ func handleCodeWhispererError(c *gin.Context, resp *http.Response) bool {
 				logger.String("direction", "upstream_response"),
 				logger.Err(err),
 			)...)
-		respondError(c, http.StatusInternalServerError, "%s", "读取响应失败")
-		return true
+		return &upstreamFailure{err: err, clientStatus: http.StatusInternalServerError,
+			write: func(c *gin.Context) { respondError(c, http.StatusInternalServerError, "%s", "读取响应失败") }}
 	}
 
 	if resp.StatusCode == http.StatusPaymentRequired && bytes.Contains(body, []byte("MONTHLY_REQUEST_COUNT")) {
@@ -258,8 +316,12 @@ func handleCodeWhispererError(c *gin.Context, resp *http.Response) bool {
 			logger.Int("response_len", len(body)),
 			logger.String("response_body", string(body)),
 		)...)
-	writeAPIError(c, mapped.Status, mapped.Code, mapped.Message, mapped.RetryAfter)
-	return true
+	return &upstreamFailure{
+		err:          fmt.Errorf("CodeWhisperer API error"),
+		retry:        accountFailureStatus(resp.StatusCode) && clientPresent(c),
+		clientStatus: mapped.Status,
+		write:        func(c *gin.Context) { writeAPIError(c, mapped.Status, mapped.Code, mapped.Message, mapped.RetryAfter) },
+	}
 }
 
 // StreamEventSender 统一的流事件发送接口

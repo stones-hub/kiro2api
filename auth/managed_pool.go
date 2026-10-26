@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -733,7 +734,9 @@ func (p *AccountPool) freeSlotsLocked(i int) int {
 
 // spreadOrderLocked keeps the plan type priority but, within one type, puts
 // the account with the most free slots first. New conversations then spread
-// out and leave room on accounts whose conversations will come back.
+// out and leave room on accounts whose conversations will come back. Accounts
+// with equally many free slots are shuffled, so an idle pool shares new
+// conversations instead of always starting with the same account.
 func (p *AccountPool) spreadOrderLocked() []int {
 	idx := make([]int, len(p.doc.Accounts))
 	free := make([]int, len(p.doc.Accounts))
@@ -741,6 +744,7 @@ func (p *AccountPool) spreadOrderLocked() []int {
 		idx[i] = i
 		free[i] = p.freeSlotsLocked(i)
 	}
+	rand.Shuffle(len(idx), func(a, b int) { idx[a], idx[b] = idx[b], idx[a] })
 	rankOf := p.planRankLocked()
 	sort.SliceStable(idx, func(a, b int) bool {
 		if ra, rb := rankOf(idx[a]), rankOf(idx[b]); ra != rb {
@@ -1011,6 +1015,41 @@ func (p *AccountPool) AcquirePreferred(ctx context.Context, preferred string) (*
 		case <-wake:
 		}
 	}
+}
+
+// AcquireOther takes an account other than exclude for a request whose
+// upstream call failed. It places the request like a new conversation but never
+// waits: the original failure is already in hand, so a pool with nothing free
+// right now returns ErrPoolUnavailable and the caller keeps that failure.
+func (p *AccountPool) AcquireOther(ctx context.Context, exclude string) (*AccountLease, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	keyID := apiKeyIDFrom(ctx)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return nil, ErrPoolUnavailable
+	}
+	now := time.Now()
+	for _, i := range p.spreadOrderLocked() {
+		a := &p.doc.Accounts[i]
+		if a.ID == exclude || a.DeletedAt != nil || a.Credentials.Disabled {
+			continue
+		}
+		rt := p.runtime[a.ID]
+		// Slots held for conversations waiting on their own account stay theirs.
+		if !usableLocked(a, rt, now) || p.freeSlotsLocked(i) <= 0 {
+			continue
+		}
+		client, routed := p.clientLocked(a)
+		if !routed {
+			continue
+		}
+		rt.active++
+		return &AccountLease{pool: p, id: a.ID, keyID: keyID, Token: tokenWithSnapshot(rt.token, a.Usage), Client: client}, nil
+	}
+	return nil, ErrPoolUnavailable
 }
 
 // AccountID identifies the account serving the lease.

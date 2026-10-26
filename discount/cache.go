@@ -53,6 +53,10 @@ type Policy struct {
 	// FixedPercentOnHit grants a billing allowance based on the whole input,
 	// independent of how many prefix tokens matched. This is not upstream usage.
 	FixedPercentOnHit bool
+	// SuppressClientDiscount keeps the prefix index working, so a conversation
+	// still returns to its account, while reporting usage exactly as upstream
+	// gave it. Conversation affinity does not depend on showing a discount.
+	SuppressClientDiscount bool
 }
 
 func NewWithPolicy(ttl time.Duration, capacity, minimum int, policy Policy) (*Cache, error) {
@@ -74,6 +78,9 @@ type Attempt struct {
 	InputTokens int
 	ReadTokens  int
 	committed   bool
+	// suppressed hides the local estimate from the client; see
+	// Policy.SuppressClientDiscount.
+	suppressed bool
 	// preferred is the account behind the longest matched prefix; account is
 	// the one bound to serve this request.
 	preferred, account string
@@ -235,7 +242,16 @@ func (c *Cache) Prepare(scope string, req *types.CountTokensRequest) (*Attempt, 
 		a.ReadTokens = percentLimit
 	}
 	a.ReadTokens = min(a.ReadTokens, percentLimit, ordinaryLimit)
+	if c.policy.SuppressClientDiscount {
+		a.suppressed, a.ReadTokens = true, 0
+	}
 	return a, nil
+}
+
+// ReportsDiscount says whether this attempt's local estimate reaches the
+// client. A suppressed attempt still routes a conversation back to its account.
+func (a *Attempt) ReportsDiscount() bool {
+	return a != nil && !a.suppressed
 }
 
 // Preferred returns the account that served the matched prefix, so the request
@@ -308,7 +324,7 @@ func (a *Attempt) Commit() {
 }
 
 func (a *Attempt) Usage(upstream *types.KiroTokenUsage, inputEstimate, outputEstimate int) map[string]any {
-	if a == nil {
+	if !a.ReportsDiscount() {
 		return upstream.AnthropicUsage(inputEstimate, outputEstimate)
 	}
 	if upstream.Valid() {

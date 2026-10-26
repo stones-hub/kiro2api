@@ -183,9 +183,11 @@ func TestDisabledLocalDiscountKeepsFullInputOnRepeat(t *testing.T) {
 	oldClient, oldCache := utils.SharedHTTPClient, localDiscountCache
 	t.Cleanup(func() { utils.SharedHTTPClient = oldClient; localDiscountCache = oldCache })
 	t.Setenv("KIRO_LOCAL_CACHE_DISCOUNT", "false")
+	// The prefix index still runs, because conversation affinity depends on it;
+	// only the local estimate is withheld from the client.
 	localDiscountCache = configuredDiscountCache()
-	if localDiscountCache != nil {
-		t.Fatal("disabled discount cache initialized")
+	if localDiscountCache == nil {
+		t.Fatal("prefix index missing, conversations cannot stay on their account")
 	}
 	fixture := testutil.EventFrame("assistantResponseEvent", `{"content":"OK"}`)
 	fixture = append(fixture, testutil.EventFrame("meteringEvent", `{"usage":0.1,"unit":"credit"}`)...)

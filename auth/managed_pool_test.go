@@ -134,15 +134,18 @@ func TestManagedImportAtomicDuplicateAndSafeView(t *testing.T) {
 	if err = p.Update(id, AccountPatch{Version: 1, RefreshToken: ptr("new-synthetic-private-refresh-token")}); err == nil {
 		t.Fatal("cross-account duplicate credential allowed")
 	}
-	// Persistence failure must leave the effective runtime configuration untouched.
-	p.mu.Lock()
-	original := p.path
-	p.path = filepath.Join(t.TempDir(), "missing", "accounts.json")
-	p.mu.Unlock()
+	// Persistence failure must leave the effective runtime configuration
+	// untouched. A directory where the backup file belongs makes the save fail
+	// without touching p.path, which the pool treats as fixed once it is
+	// running and reads from its own goroutines.
+	backup := filepath.Join(filepath.Dir(p.path), "accounts.previous.json")
+	if err := os.Remove(backup); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(backup, 0700); err != nil {
+		t.Fatal(err)
+	}
 	err = p.Update(id, AccountPatch{Version: 1, Concurrency: ptr(9)})
-	p.mu.Lock()
-	p.path = original
-	p.mu.Unlock()
 	if err == nil || p.View().Accounts[0].Concurrency != 2 {
 		t.Fatal("failed persistence changed live concurrency")
 	}
@@ -597,6 +600,12 @@ func readyPool(t *testing.T, n, limit int) *AccountPool {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = p.Close() })
+	waitReady(t, p, n)
+	return p
+}
+
+func waitReady(t *testing.T, p *AccountPool, n int) {
+	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		ready := 0
@@ -606,7 +615,7 @@ func readyPool(t *testing.T, n, limit int) *AccountPool {
 			}
 		}
 		if ready == n {
-			return p
+			return
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("accounts never became ready")
@@ -668,5 +677,84 @@ func TestHeldSlotGoesToReturningConversation(t *testing.T) {
 	got.Release(RequestOutcome{Success: true})
 	if n := len(p.stickyWaiters); n != 0 {
 		t.Fatalf("held slots leaked: %v", p.stickyWaiters)
+	}
+}
+
+// New conversations must not all start on the same account: among accounts with
+// equally many free slots the pool picks at random.
+func TestIdlePoolSpreadsNewConversationsAtRandom(t *testing.T) {
+	p := readyPool(t, 3, 1)
+	seen := map[string]int{}
+	for i := 0; i < 60; i++ {
+		l := testAcquire(t, p)
+		seen[l.AccountID()]++
+		l.Release(RequestOutcome{Success: true})
+	}
+	if len(seen) < 2 {
+		t.Fatalf("new conversations stacked on one account: %v", seen)
+	}
+}
+
+func TestAcquireOtherSkipsFailedAccountAndNeverWaits(t *testing.T) {
+	p := readyPool(t, 2, 1)
+	first := testAcquire(t, p)
+	// A retry leaves the account that just failed and takes the free one.
+	other, err := p.AcquireOther(context.Background(), first.AccountID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.AccountID() == first.AccountID() {
+		t.Fatal("retry returned to the account that failed")
+	}
+	// Nothing else is free, so a retry gives up at once instead of queueing.
+	started := time.Now()
+	if _, err := p.AcquireOther(context.Background(), first.AccountID()); err != ErrPoolUnavailable {
+		t.Fatalf("err %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("retry waited for a busy pool: %v", elapsed)
+	}
+	other.Release(RequestOutcome{Success: true})
+	first.Release(RequestOutcome{Success: true})
+
+	// A single-account pool has nowhere to move a failed request to.
+	single, id := managedTestPool(t, 2)
+	waitReady(t, single, 1)
+	if _, err := single.AcquireOther(context.Background(), id); err != ErrPoolUnavailable {
+		t.Fatalf("single account pool moved a request: %v", err)
+	}
+}
+
+// AcquireOther must take the account with the most free slots, like a new
+// conversation, rather than the first usable one in pool order.
+func TestAcquireOtherPrefersTheMostFreeAccount(t *testing.T) {
+	p := readyPool(t, 3, 4)
+	ids := []string{}
+	for _, a := range p.View().Accounts {
+		ids = append(ids, a.ID)
+	}
+	busy := []*AccountLease{}
+	for _, want := range []string{ids[0], ids[0], ids[0], ids[2], ids[2]} {
+		l, err := p.AcquirePreferred(context.Background(), want)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if l.AccountID() != want {
+			t.Fatalf("setup placed a request on %s, want %s", l.AccountID(), want)
+		}
+		busy = append(busy, l)
+	}
+	// Free slots now: ids[0]=1, ids[1]=4, ids[2]=2. Excluding the roomiest
+	// account must fall to the next roomiest, never to pool order.
+	l, err := p.AcquireOther(context.Background(), ids[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l.AccountID() != ids[2] {
+		t.Fatalf("retry picked %s, want the next roomiest %s", l.AccountID(), ids[2])
+	}
+	l.Release(RequestOutcome{Success: true})
+	for _, b := range busy {
+		b.Release(RequestOutcome{Success: true})
 	}
 }

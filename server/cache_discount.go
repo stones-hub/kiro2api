@@ -15,27 +15,31 @@ import (
 
 var localDiscountCache *discount.Cache
 
+// configuredDiscountCache always returns a cache: the prefix index is what
+// keeps a conversation on its account, which the bridge does unconditionally.
+// KIRO_LOCAL_CACHE_DISCOUNT only decides whether the local estimate derived
+// from that index is reported to the client.
 func configuredDiscountCache() *discount.Cache {
-	if os.Getenv("KIRO_LOCAL_CACHE_DISCOUNT") != "true" {
-		return nil
-	}
-	policy := discount.Policy{MaxReadPercent: 40, MinUncachedTokens: 0, FixedPercentOnHit: true}
-	if raw, present := os.LookupEnv("KIRO_LOCAL_CACHE_FIXED_PERCENT_ON_HIT"); present {
-		if raw != "true" && raw != "false" {
-			panic("invalid local cache configuration: KIRO_LOCAL_CACHE_FIXED_PERCENT_ON_HIT")
-		}
-		policy.FixedPercentOnHit = raw == "true"
-	}
-	for name, target := range map[string]*int{
-		"KIRO_LOCAL_CACHE_MAX_PERCENT":         &policy.MaxReadPercent,
-		"KIRO_LOCAL_CACHE_MIN_UNCACHED_TOKENS": &policy.MinUncachedTokens,
-	} {
-		if raw, present := os.LookupEnv(name); present {
-			value, err := strconv.Atoi(raw)
-			if err != nil {
-				panic("invalid local cache configuration: " + name)
+	policy := discount.Policy{MaxReadPercent: 40, MinUncachedTokens: 0, FixedPercentOnHit: true,
+		SuppressClientDiscount: os.Getenv("KIRO_LOCAL_CACHE_DISCOUNT") != "true"}
+	if !policy.SuppressClientDiscount {
+		if raw, present := os.LookupEnv("KIRO_LOCAL_CACHE_FIXED_PERCENT_ON_HIT"); present {
+			if raw != "true" && raw != "false" {
+				panic("invalid local cache configuration: KIRO_LOCAL_CACHE_FIXED_PERCENT_ON_HIT")
 			}
-			*target = value
+			policy.FixedPercentOnHit = raw == "true"
+		}
+		for name, target := range map[string]*int{
+			"KIRO_LOCAL_CACHE_MAX_PERCENT":         &policy.MaxReadPercent,
+			"KIRO_LOCAL_CACHE_MIN_UNCACHED_TOKENS": &policy.MinUncachedTokens,
+		} {
+			if raw, present := os.LookupEnv(name); present {
+				value, err := strconv.Atoi(raw)
+				if err != nil {
+					panic("invalid local cache configuration: " + name)
+				}
+				*target = value
+			}
 		}
 	}
 	cache, err := discount.NewWithPolicy(5*time.Minute, 16384, 1, policy)
@@ -81,6 +85,10 @@ func newCacheDiscountAttempt(c *gin.Context, req types.AnthropicRequest) *discou
 		logger.Warn("Local cache discount skipped: unsupported request representation")
 		return nil
 	}
-	c.Header("X-Kiro-Cache-Accounting", "local-estimate")
+	// With reporting off the attempt only routes the conversation back to its
+	// account, so the response must look exactly as it did before.
+	if attempt.ReportsDiscount() {
+		c.Header("X-Kiro-Cache-Accounting", "local-estimate")
+	}
 	return attempt
 }
