@@ -139,6 +139,7 @@ func NewAdminRouter(pool *auth.AccountPool, secret string, origins []string, sta
 		c.JSON(200, m)
 	})
 	registerModelRoutes(r, pool, readJSON, fail)
+	registerErrorDumpRoutes(r, pool)
 	r.GET("/api/usage", func(c *gin.Context) {
 		atoi := func(k string) int {
 			n, _ := strconv.Atoi(c.Query(k))

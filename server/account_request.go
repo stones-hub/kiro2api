@@ -85,6 +85,9 @@ func acquireRequestAccount(c *gin.Context, service *auth.AuthService, model stri
 			c.Header("Retry-After", "2")
 		}
 		respondError(c, status, "%s", err.Error())
+		if errors.Is(err, auth.ErrPoolUnavailable) {
+			recordNoAccount(c, model, status, err)
+		}
 		return nil, func() {}, false
 	}
 	token := s.adopt(c, lease)
@@ -134,14 +137,14 @@ func switchAccountAfterFailure(c *gin.Context, status int) (types.TokenInfo, boo
 	lease, err := s.pool.AcquireOther(c.Request.Context(), failed.lease.AccountID())
 	if err != nil {
 		logger.Warn("上游失败且没有其他可用账号，返回原始错误",
-			addReqFields(c, logger.String("account_id", failed.lease.AccountID()), logger.Err(err))...)
+			withErrorDump(c, logger.String("account_id", failed.lease.AccountID()), logger.Err(err))...)
 		return types.TokenInfo{}, false
 	}
 	s.moved = true
 	failed.release(c, status)
 	token := s.adopt(c, lease)
 	logger.Warn("上游失败，换号重试一次",
-		addReqFields(c,
+		withErrorDump(c,
 			logger.String("failed_account_id", failed.lease.AccountID()),
 			logger.String("retry_account_id", lease.AccountID()),
 			logger.Int("failed_status", status))...)

@@ -36,7 +36,10 @@ func handleOpenAINonStreamRequest(c *gin.Context, anthropicReq types.AnthropicRe
 	compliantParser := responseParser(anthropicReq)
 	result, err := compliantParser.ParseResponse(body)
 	if err != nil {
+		dump := recordParseFailure(c, resp, body, err)
+		logger.Error("非流式解析失败", withErrorDump(c, logger.Err(err), logger.Int("response_size", len(body)))...)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "响应解析失败"})
+		dump.save(c, http.StatusInternalServerError, false)
 		return
 	}
 
@@ -108,6 +111,10 @@ func handleOpenAINonStreamRequest(c *gin.Context, anthropicReq types.AnthropicRe
 	credits, metered := compliantParser.Credits()
 	recordAccountCredits(c, credits, metered)
 	c.JSON(http.StatusOK, openaiResp)
+	// Recorded after the answer is written so the client does not wait on it.
+	if event := firstExceptionEvent(result.Events); event != nil {
+		recordUpstreamException(c, event, body, len(body), len(result.Events))
+	}
 	if len(contexts) > 0 && !result.Summary.HasErrors && len(result.Errors) == 0 && c.Request.Context().Err() == nil {
 		recordAccountSuccess(c)
 		discountAttempt.Commit()
@@ -192,6 +199,9 @@ func handleOpenAIStreamRequest(c *gin.Context, anthropicReq types.AnthropicReque
 			for _, event := range events {
 				if event.Event == "error" || event.Event == "exception" {
 					streamFailed = true
+					if dataMap, ok := event.Data.(map[string]any); ok {
+						recordUpstreamException(c, dataMap, nil, totalBytesRead, messageCount)
+					}
 				}
 				if event.Data != nil {
 					if dataMap, ok := event.Data.(map[string]any); ok {

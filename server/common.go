@@ -75,11 +75,11 @@ func (e *conversionError) Unwrap() error { return e.err }
 func handleRequestBuildError(c *gin.Context, err error) {
 	var conv *conversionError
 	if errors.As(err, &conv) {
-		logger.Warn("请求转换失败", addReqFields(c, logger.Err(err))...)
+		logger.Warn("请求转换失败", withErrorDump(c, logger.Err(err))...)
 		writeAPIError(c, http.StatusBadRequest, "invalid_request", "请求无法转换为上游格式: "+conv.Error(), "")
 		return
 	}
-	logger.Error("构建请求失败", addReqFields(c, logger.Err(err))...)
+	logger.Error("构建请求失败", withErrorDump(c, logger.Err(err))...)
 	writeAPIError(c, http.StatusInternalServerError, "internal_error", "构建请求失败: "+err.Error(), "")
 }
 
@@ -90,7 +90,7 @@ func handleRequestSendError(c *gin.Context, err error) {
 		c.Abort()
 		return
 	}
-	logger.Error("发送请求失败", addReqFields(c, logger.Err(err))...)
+	logger.Error("发送请求失败", withErrorDump(c, logger.Err(err))...)
 	writeAPIError(c, http.StatusBadGateway, "upstream_unreachable", "无法连接上游，请稍后重试", "2")
 }
 
@@ -136,6 +136,9 @@ type upstreamFailure struct {
 	clientStatus int
 	// retry marks the account, rather than the request itself, as what failed.
 	retry bool
+	// dump is this try's error scene, saved once it is known whether the
+	// request moved on to another account; nil when not recorded.
+	dump *errorDump
 }
 
 // clientPresent reports whether the caller is still waiting for an answer.
@@ -165,6 +168,7 @@ func executeCodeWhispererRequest(c *gin.Context, anthropicReq types.AnthropicReq
 	}
 	if fail.retry {
 		if token, ok := switchAccountAfterFailure(c, fail.clientStatus); ok {
+			fail.dump.save(c, fail.clientStatus, true)
 			retried, retryFail := attemptCodeWhispererRequest(c, anthropicReq, token, isStream)
 			if retryFail == nil {
 				return retried, nil
@@ -174,6 +178,7 @@ func executeCodeWhispererRequest(c *gin.Context, anthropicReq types.AnthropicReq
 		}
 	}
 	fail.write(c)
+	fail.dump.save(c, fail.clientStatus, false)
 	return nil, fail.err
 }
 
@@ -185,7 +190,14 @@ func attemptCodeWhispererRequest(c *gin.Context, anthropicReq types.AnthropicReq
 		if _, ok := err.(*types.ModelNotFoundErrorType); ok {
 			return nil, &upstreamFailure{err: err, clientStatus: http.StatusBadRequest, write: func(*gin.Context) {}}
 		}
-		return nil, &upstreamFailure{err: err, clientStatus: http.StatusBadRequest,
+		// handleRequestBuildError answers 400 for a conversion failure and 500
+		// for anything else.
+		kind, status := dumpConversionError, http.StatusBadRequest
+		if !errors.As(err, new(*conversionError)) {
+			kind, status = dumpBuildError, http.StatusInternalServerError
+		}
+		return nil, &upstreamFailure{err: err, clientStatus: status,
+			dump:  newErrorDump(c, kind, err.Error()),
 			write: func(c *gin.Context) { handleRequestBuildError(c, err) }}
 	}
 
@@ -194,13 +206,15 @@ func attemptCodeWhispererRequest(c *gin.Context, anthropicReq types.AnthropicReq
 		// 代理故障与上游无关：暂停该账号，且不向客户端暴露代理地址
 		if utils.IsProxyError(err) {
 			recordAccountProxyError(c)
-			logger.Error("账号代理连接失败", addReqFields(c, logger.Err(err))...)
-			return nil, &upstreamFailure{err: err, retry: clientPresent(c), clientStatus: http.StatusBadGateway,
+			dump := newErrorDump(c, dumpProxyError, utils.ProxyErrorMessage(err)).withUpstreamRequest(c)
+			logger.Error("账号代理连接失败", withErrorDump(c, logger.Err(err))...)
+			return nil, &upstreamFailure{err: err, retry: clientPresent(c), clientStatus: http.StatusBadGateway, dump: dump,
 				write: func(c *gin.Context) {
 					respondError(c, http.StatusBadGateway, "%s", "账号代理连接失败，请稍后重试")
 				}}
 		}
 		return nil, &upstreamFailure{err: err, retry: clientPresent(c), clientStatus: http.StatusBadGateway,
+			dump:  newErrorDump(c, dumpUpstreamUnreachable, err.Error()).withUpstreamRequest(c),
 			write: func(c *gin.Context) { handleRequestSendError(c, err) }}
 	}
 
@@ -209,6 +223,7 @@ func attemptCodeWhispererRequest(c *gin.Context, anthropicReq types.AnthropicReq
 		return nil, fail
 	}
 
+	rememberUpstreamResponse(c, resp)
 	// 上游响应成功，记录方向与会话
 	logger.Debug("上游响应成功",
 		addReqFields(c,
@@ -279,6 +294,7 @@ func buildCodeWhispererRequest(c *gin.Context, anthropicReq types.AnthropicReque
 	req.Header.Set("x-amzn-kiro-agent-mode", "vibe")
 	req.Header.Set("x-amz-user-agent", "aws-sdk-js/1.0.34 KiroIDE-0.11.107")
 	req.Header.Set("user-agent", "aws-sdk-js/1.0.34 ua/2.1 api/codewhispererstreaming#1.0.34 m/E KiroIDE-0.11.107")
+	rememberUpstreamRequest(c, req, cwReqBody)
 
 	return req, nil
 }
@@ -293,12 +309,13 @@ func inspectUpstreamResponse(c *gin.Context, resp *http.Response) *upstreamFailu
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		dump := newErrorDump(c, dumpUpstreamStatus, "读取错误响应失败: "+err.Error()).withUpstreamRequest(c).withUpstreamResponse(resp, nil)
 		logger.Error("读取错误响应失败",
-			addReqFields(c,
+			withErrorDump(c,
 				logger.String("direction", "upstream_response"),
 				logger.Err(err),
 			)...)
-		return &upstreamFailure{err: err, clientStatus: http.StatusInternalServerError,
+		return &upstreamFailure{err: err, clientStatus: http.StatusInternalServerError, dump: dump,
 			write: func(c *gin.Context) { respondError(c, http.StatusInternalServerError, "%s", "读取响应失败") }}
 	}
 
@@ -307,8 +324,10 @@ func inspectUpstreamResponse(c *gin.Context, resp *http.Response) *upstreamFailu
 	}
 
 	mapped := MapUpstreamError(resp.StatusCode, body)
+	dump := newErrorDump(c, dumpUpstreamStatus, fmt.Sprintf("Kiro 返回 %d: %s", resp.StatusCode, mapped.Code)).
+		withUpstreamRequest(c).withUpstreamResponse(resp, body)
 	logger.Error("上游响应错误",
-		addReqFields(c,
+		withErrorDump(c,
 			logger.String("direction", "upstream_response"),
 			logger.Int("status_code", resp.StatusCode),
 			logger.Int("client_status", mapped.Status),
@@ -320,6 +339,7 @@ func inspectUpstreamResponse(c *gin.Context, resp *http.Response) *upstreamFailu
 		err:          fmt.Errorf("CodeWhisperer API error"),
 		retry:        accountFailureStatus(resp.StatusCode) && clientPresent(c),
 		clientStatus: mapped.Status,
+		dump:         dump,
 		write:        func(c *gin.Context) { writeAPIError(c, mapped.Status, mapped.Code, mapped.Message, mapped.RetryAfter) },
 	}
 }

@@ -244,10 +244,11 @@ func handleNonStreamRequest(c *gin.Context, anthropicReq types.AnthropicRequest,
 	}()
 
 	if err != nil {
+		dump := recordParseFailure(c, resp, body, err)
 		logger.Error("非流式解析失败",
-			logger.Err(err),
-			logger.String("model", anthropicReq.Model),
-			logger.Int("response_size", len(body)))
+			withErrorDump(c, logger.Err(err),
+				logger.String("model", anthropicReq.Model),
+				logger.Int("response_size", len(body)))...)
 
 		// 提供更详细的错误信息和建议
 		errorResp := gin.H{
@@ -267,6 +268,7 @@ func handleNonStreamRequest(c *gin.Context, anthropicReq types.AnthropicRequest,
 		}
 
 		c.JSON(statusCode, errorResp)
+		dump.save(c, statusCode, false)
 		return
 	}
 
@@ -425,6 +427,10 @@ func handleNonStreamRequest(c *gin.Context, anthropicReq types.AnthropicRequest,
 	credits, metered := compliantParser.Credits()
 	recordAccountCredits(c, credits, metered)
 	c.JSON(http.StatusOK, anthropicResp)
+	// Recorded after the answer is written so the client does not wait on it.
+	if event := firstExceptionEvent(result.Events); event != nil {
+		recordUpstreamException(c, event, body, len(body), len(result.Events))
+	}
 	if len(contexts) > 0 && !result.Summary.HasErrors && len(result.Errors) == 0 && c.Request.Context().Err() == nil {
 		recordAccountSuccess(c)
 		discountAttempt.Commit()

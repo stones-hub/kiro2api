@@ -89,7 +89,7 @@ KIRO_LOCAL_CACHE_DISCOUNT=true
 sudo mkdir -p data && sudo chown -R 1001:1001 data && sudo chmod 700 data
 ```
 
-`data/` 中保存账号凭据、API Key、模型配置、备份及 `usage/` 使用记录，已被 `.gitignore` 和 `.dockerignore` 排除。
+`data/` 中保存账号凭据、API Key、模型配置、备份、`usage/` 使用记录及 `error-dumps/` 错误现场（含明文用户对话，见 [error-dump.md](./error-dump.md)），已被 `.gitignore` 和 `.dockerignore` 排除。
 
 ### 3.4 构建并启动
 

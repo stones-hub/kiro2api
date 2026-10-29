@@ -550,7 +550,67 @@ for(const id of ['usage-date','usage-key','usage-account','usage-model','usage-r
 $('usage-prev').addEventListener('click',()=>{usageState.offset=Math.max(0,usageState.offset-usageState.limit);loadUsage();});
 $('usage-next').addEventListener('click',()=>{usageState.offset+=usageState.limit;loadUsage();});
 $('usage-refresh').addEventListener('click',()=>{usageState.offset=0;loadUsage();});
-const views={overview:'运行总览',accounts:'账号池',proxies:'代理',models:'模型',usage:'使用日志',keys:'API Key'};
+// ---- Error log: the full scene of failed requests. Everything in a dump is
+// arbitrary user or upstream text, so it is only ever rendered through textContent.
+const dumpKinds={upstream_status:'上游返回错误',upstream_unreachable:'连不上上游',proxy_error:'账号代理错误',stream_exception:'响应中的异常',parse_error:'响应解析失败',no_account:'没有可用账号',conversion_error:'请求转换失败',build_error:'请求构建失败'};
+const dumpState={loading:false,current:null};
+function dumpStatus(s){const parts=[];if(s.upstream_status)parts.push('上游 '+s.upstream_status);if(s.client_status)parts.push('返回 '+s.client_status);return parts.join(' → ')||'—';}
+async function loadErrorDumps(){
+  if(dumpState.loading)return;dumpState.loading=true;
+  try{
+    const r=await request('error-dumps');const rows=$('error-rows');rows.replaceChildren();
+    $('errors-off').hidden=r.enabled;$('errors-empty').hidden=!r.enabled||!!r.dumps.length;
+    $('errors-info').textContent=r.enabled?`共 ${r.dumps.length} 条（最新在前，最多保留 ${r.keep} 条）`:'记录已关闭';
+    for(const s of r.dumps){
+      const row=el('tr');row.append(el('td','mono',time(s.time)));
+      const kind=el('td','',dumpKinds[s.kind]||s.kind);kind.title=s.error||'';row.append(kind);
+      const status=el('td','',dumpStatus(s));if(s.retried)status.append(el('span','dump-retried','已换号重试 · 第 '+s.attempt+' 次'));else if(s.attempt>1)status.append(el('span','dump-retried','第 '+s.attempt+' 次（换号后）'));row.append(status);
+      const acc=el('td','subtext',s.account||(s.account_id?s.account_id.slice(0,8):'—'));acc.title=s.account_id||'';row.append(acc);
+      const model=el('td','',s.model||'—');if(s.stream)model.append(el('span','subtext',' 流式'));row.append(model);
+      row.append(el('td','mono',s.request_id||'—'));
+      const actions=el('td');const group=el('div','row-actions');const view=button('查看',()=>openErrorDump(s.id));view.setAttribute('aria-label','查看错误详情 '+time(s.time));group.append(view);actions.append(group);row.append(actions);
+      rows.append(row);
+    }
+  }catch(e){toast(e.message);}finally{dumpState.loading=false;}
+}
+// pretty shows JSON indented; anything else is shown as it is.
+function pretty(text){try{return JSON.stringify(JSON.parse(text),null,2);}catch{return text;}}
+function headerLines(h){return Object.keys(h||{}).sort().flatMap(k=>h[k].map(v=>k+': '+v));}
+function bodyNote(p){const notes=[];if(p.body_encoding==='base64')notes.push('以下为 base64，原始内容不是 UTF-8 文本');if(p.body_truncated)notes.push(`已截断，原始大小 ${integer.format(p.body_bytes)} 字节，只保留前 2 MiB`);return notes.length?'（'+notes.join('；')+'）':'';}
+// dumpSections returns [title, shown, copied] per section: shown formats JSON, copied is the original text.
+function dumpSections(d){
+  const out=[];const part=(title,head,p,extra=[])=>{
+    const note=bodyNote(p);const lines=[...head,...headerLines(p.headers)];
+    const build=body=>[...lines,'',...extra,...(note?[note]:[]),body].join('\n');
+    out.push([title,build(p.body_encoding==='base64'?p.body:pretty(p.body)),build(p.body)]);};
+  if(d.client)part('客户端请求',[d.client.method+' '+d.client.path],d.client);else out.push(['客户端请求','（无）','（无）']);
+  if(d.upstream_request)part('发给 Kiro',['POST '+d.upstream_request.url],d.upstream_request);else out.push(['发给 Kiro','（这次失败没有发给 Kiro）','（这次失败没有发给 Kiro）']);
+  const r=d.upstream_response;
+  if(r){const extra=[];if(r.event!==undefined){extra.push('异常事件：'+(r.event_truncated?`（已截断，原始大小 ${integer.format(r.event_bytes)} 字节，只保留前 2 MiB）`:''),typeof r.event==='string'?r.event:JSON.stringify(r.event,null,2),'');if(r.read_bytes||r.events)extra.push(`出错前已读取 ${r.read_bytes} 字节、${r.events} 个事件`,'');}part('Kiro 响应',['HTTP '+r.status],r,extra);}
+  else out.push(['Kiro 响应',d.upstream_request?'（没有收到 Kiro 的响应）':'（无）',d.upstream_request?'（没有收到 Kiro 的响应）':'（无）']);
+  return out;
+}
+function dumpSummaryLines(s){return [['时间',time(s.time)],['类型',(dumpKinds[s.kind]||s.kind)+' ('+s.kind+')'],['说明',s.error||'—'],['request_id',s.request_id||'—'],['尝试',`第 ${s.attempt} 次`+(s.retried?'，已换号重试':'')],['账号',s.account_id?(s.account||'—')+' · '+s.account_id:'—'],['模型',(s.model||'—')+(s.stream?' · 流式':'')],['上游状态',s.upstream_status||'—'],['返回客户端',s.client_status||(s.retried?'未返回（已换号重试）':'—')],['记录编号',s.id]];}
+async function copyText(text,fallback){try{await navigator.clipboard.writeText(text);toast('已复制到剪贴板');}catch{const range=document.createRange();range.selectNodeContents(fallback);const sel=getSelection();sel.removeAllRanges();sel.addRange(range);toast('请按 Ctrl+C 复制');}}
+async function openErrorDump(id){
+  let d;try{d=await request('error-dumps/'+encodeURIComponent(id));}catch(e){toast(e.message);return;}
+  dumpState.current=d;const s=d.summary;
+  $('error-title').textContent=(dumpKinds[s.kind]||s.kind)+' · '+time(s.time);
+  const meta=$('error-meta');meta.replaceChildren();for(const[label,value]of dumpSummaryLines(s))meta.append(el('dt','',label),el('dd','',String(value)));
+  const box=$('error-sections');box.replaceChildren();
+  for(const[title,shown,copied]of dumpSections(d)){
+    const sec=el('section','dump-section');const head=el('header');const h=el('h3','',title);head.append(h);
+    const pre=el('pre','dump-pre',shown);pre.tabIndex=0;pre.setAttribute('aria-label',title+'内容');
+    const copy=button('复制',()=>copyText(copied,pre),'button secondary');copy.setAttribute('aria-label','复制'+title);head.append(copy);
+    sec.append(head,pre);box.append(sec);
+  }
+  $('error-dialog').showModal();
+}
+$('error-copy-all').addEventListener('click',()=>{const d=dumpState.current;if(!d)return;
+  const text=[...dumpSummaryLines(d.summary).map(([k,v])=>k+'：'+v),...dumpSections(d).flatMap(([title,,copied])=>['','===== '+title+' =====',copied])].join('\n');
+  copyText(text,$('error-sections'));});
+$('errors-refresh').addEventListener('click',loadErrorDumps);
+const views={overview:'运行总览',accounts:'账号池',proxies:'代理',models:'模型',usage:'使用日志',errors:'错误日志',keys:'API Key'};
 function showView(){
   const view=location.hash.slice(1) in views?location.hash.slice(1):'overview';
   for(const n of document.querySelectorAll('[data-page]'))n.hidden=n.dataset.page!==view;
@@ -559,6 +619,7 @@ function showView(){
   // Charts size themselves from their container, which is zero-width while hidden.
   if(view==='overview')renderMetrics();
   if(view==='usage')loadUsage();
+  if(view==='errors')loadErrorDumps();
 }
 addEventListener('hashchange',showView);showView();
 let resizeTimer,lastWidth=innerWidth;addEventListener('resize',()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>{if(innerWidth!==lastWidth){lastWidth=innerWidth;renderMetrics();}},150);});

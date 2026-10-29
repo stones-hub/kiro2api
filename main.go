@@ -55,6 +55,13 @@ func main() {
 		auth.SetStickyWait(time.Duration(seconds) * time.Second)
 	}
 
+	// Error scenes of failed requests under the admin data directory.
+	// Unset or empty records; "off" disables; anything else is a mistake.
+	if err := server.SetErrorDump(os.Getenv("KIRO_ERROR_DUMP")); err != nil {
+		logger.Error("错误现场记录配置无效", logger.Err(err))
+		os.Exit(1)
+	}
+
 	// 🚀 创建AuthService实例（使用依赖注入）
 	logger.Info("正在创建AuthService...")
 	authService, err := auth.NewAuthService()

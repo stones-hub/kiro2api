@@ -42,6 +42,7 @@ func StartServer(port string, authToken string, authService *auth.AuthService) {
 		}()
 	}
 	r := NewRouter(authToken, authService)
+	logErrorDumpMode(authService.ManagedPool())
 	server := &http.Server{Addr: net.JoinHostPort(os.Getenv("BIND_HOST"), port), Handler: r, ReadHeaderTimeout: 15 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -72,6 +73,7 @@ func StartServer(port string, authToken string, authService *auth.AuthService) {
 
 func NewRouter(authToken string, authService *auth.AuthService) *gin.Engine {
 	localDiscountCache = configuredDiscountCache()
+	errorDumps.Store(errorDumpStoreFor(authService.ManagedPool()))
 	// 设置 gin 模式
 	ginMode := os.Getenv("GIN_MODE")
 	if ginMode == "" {
@@ -116,6 +118,7 @@ func NewRouter(authToken string, authService *auth.AuthService) *gin.Engine {
 			respondError(c, http.StatusBadRequest, "%s", "读取请求失败或请求体超过 32 MiB")
 			return
 		}
+		rememberClientBody(c, body)
 
 		// 先解析为通用map以便处理工具格式
 		var rawReq map[string]any
@@ -241,6 +244,7 @@ func NewRouter(authToken string, authService *auth.AuthService) *gin.Engine {
 			respondError(c, http.StatusBadRequest, "%s", "读取请求失败或请求体超过 32 MiB")
 			return
 		}
+		rememberClientBody(c, body)
 
 		var openaiReq types.OpenAIRequest
 		if err := utils.SafeUnmarshal(body, &openaiReq); err != nil {

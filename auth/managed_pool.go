@@ -1060,6 +1060,24 @@ func (l *AccountLease) AccountID() string {
 	return l.id
 }
 
+// DataDir is the management data directory, the one holding accounts.json.
+func (p *AccountPool) DataDir() string { return filepath.Dir(p.path) }
+
+// AccountEmail reports the account's email, or its name when it has none; ""
+// for an unknown account.
+func (p *AccountPool) AccountEmail(id string) string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	i := p.indexLocked(id)
+	if i < 0 {
+		return ""
+	}
+	if a := p.doc.Accounts[i]; a.Email != "" {
+		return a.Email
+	}
+	return p.doc.Accounts[i].Name
+}
+
 func (s *RequestStats) add(o RequestOutcome) {
 	s.Requests++
 	if o.Canceled {

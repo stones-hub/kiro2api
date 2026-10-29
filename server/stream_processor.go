@@ -461,6 +461,7 @@ func (esp *EventStreamProcessor) processEvent(event parser.SSEEvent) error {
 
 	case "exception":
 		esp.ctx.upstreamFailed = true
+		recordUpstreamException(esp.ctx.c, dataMap, nil, esp.ctx.totalReadBytes, esp.ctx.totalProcessedEvents)
 		esp.ctx.exceptionType, _ = dataMap["exception_type"].(string)
 		// 处理上游异常事件，检查是否需要映射为max_tokens
 		if esp.handleExceptionEvent(dataMap) {
@@ -468,6 +469,7 @@ func (esp *EventStreamProcessor) processEvent(event parser.SSEEvent) error {
 		}
 	case "error":
 		esp.ctx.upstreamFailed = true
+		recordUpstreamException(esp.ctx.c, dataMap, nil, esp.ctx.totalReadBytes, esp.ctx.totalProcessedEvents)
 	}
 
 	// 使用状态管理器发送事件（直传）
@@ -551,6 +553,13 @@ func (esp *EventStreamProcessor) processEvent(event parser.SSEEvent) error {
 // 返回true表示已处理（聚合），不需要转发原始事件
 // processContentBlockDelta 已废弃（直传模式不再需要）
 
+// maxTokensException reports a Kiro exception that is answered as a
+// max_tokens stop rather than an error.
+func maxTokensException(exceptionType string) bool {
+	return exceptionType == "ContentLengthExceededException" ||
+		strings.Contains(exceptionType, "CONTENT_LENGTH_EXCEEDS")
+}
+
 // handleExceptionEvent 处理上游异常事件，检查是否需要映射为max_tokens
 // 返回true表示已处理并转换，不需要转发原始exception事件
 func (esp *EventStreamProcessor) handleExceptionEvent(dataMap map[string]any) bool {
@@ -558,8 +567,7 @@ func (esp *EventStreamProcessor) handleExceptionEvent(dataMap map[string]any) bo
 	exceptionType, _ := dataMap["exception_type"].(string)
 
 	// 检查是否为内容长度超限异常
-	if exceptionType == "ContentLengthExceededException" ||
-		strings.Contains(exceptionType, "CONTENT_LENGTH_EXCEEDS") {
+	if maxTokensException(exceptionType) {
 
 		logger.Info("检测到内容长度超限异常，映射为max_tokens stop_reason",
 			addReqFields(esp.ctx.c,
