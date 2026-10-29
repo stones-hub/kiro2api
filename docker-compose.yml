@@ -25,7 +25,6 @@ services:
       - KIRO_AUTH_TOKEN=${KIRO_AUTH_TOKEN:-}
       - GIN_MODE=${GIN_MODE:-release}
       - LOG_LEVEL=${LOG_LEVEL:-info}
-      - LOG_FORMAT=${LOG_FORMAT:-json}
       - LOG_CONSOLE=${LOG_CONSOLE:-true}
       - LOG_FILE=${LOG_FILE:-}
     volumes:

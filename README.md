@@ -12,7 +12,6 @@ Go 1.24 · gin · 镜像 `ghcr.io/stones-hub/kiro2api`（linux/amd64、linux/arm
 
 ## 目录
 
-- [两种运行模式](#两种运行模式)
 - [快速开始](#快速开始)
 - [客户端接入](#客户端接入)
 - [API 接口](#api-接口)
@@ -23,25 +22,14 @@ Go 1.24 · gin · 镜像 `ghcr.io/stones-hub/kiro2api`（linux/amd64、linux/arm
 - [环境变量](#环境变量)
 - [排查问题](#排查问题)
 - [开发](#开发)
+- [旧版环境变量模式](#旧版环境变量模式)
 - [相关文档](#相关文档)
 
 ---
 
-## 两种运行模式
-
-| | 管理模式（推荐） | 环境变量模式（旧） |
-|---|---|---|
-| 怎么开启 | 设置 `KIRO_ADMIN_DATA_DIR` | 不设置 `KIRO_ADMIN_DATA_DIR`，只设置 `KIRO_AUTH_TOKEN` |
-| 账号从哪来 | 管理后台添加，保存在数据目录的 `accounts.json` | `KIRO_AUTH_TOKEN` 里的 JSON 或文件 |
-| 账号选择 | 会话粘滞 + 按空位分散 + 出错换号重试 | 按配置顺序依次使用 |
-| 客户端密钥 | `KIRO_CLIENT_TOKEN`，以及后台创建的多个 API Key | 只有 `KIRO_CLIENT_TOKEN` |
-| 管理后台、使用日志、错误日志、代理 | 有 | 没有（只有主端口上一个只读的 `/api/tokens`，不需要认证） |
-
-本仓库的 `docker-compose.yml` 和下面的说明都按管理模式写。管理模式下账号池为空也能启动，在后台添加账号后才能真正调用模型。
-
----
-
 ## 快速开始
+
+用 Docker Compose 部署时，不需要选什么模式，也不需要额外配置：compose 里已经写了 `KIRO_ADMIN_DATA_DIR=/app/data`，启动后自动带管理后台。账号在后台添加，数据存在 `data/` 目录。账号池为空也能启动，添加账号后才能真正调用模型。下文说的“管理模式”就是指这种默认方式。
 
 ### 方式一：使用发布好的镜像
 
@@ -96,7 +84,7 @@ go build -o kiro2api main.go
 KIRO_CLIENT_TOKEN=换成随机串 KIRO_ADMIN_SECRET=换成至少32位的随机串 KIRO_ADMIN_DATA_DIR=./data KIRO_ADMIN_ORIGINS=http://127.0.0.1:8081 ./kiro2api
 ```
 
-程序启动时会自动读取当前目录下的 `.env`。默认 API 监听 `:8080`，管理后台监听 `127.0.0.1:8081`。
+程序启动时会自动读取当前目录下的 `.env`。默认 API 监听 `:8080`，管理后台监听 `127.0.0.1:8081`。不用 Docker 时要自己带上 `KIRO_ADMIN_DATA_DIR`，否则会进入[旧版环境变量模式](#旧版环境变量模式)，没有管理后台。
 
 ### 启动后检查
 
@@ -141,7 +129,7 @@ curl http://127.0.0.1:18080/v1/chat/completions -H "Authorization: Bearer $KIRO_
 | `POST /v1/chat/completions` | OpenAI Chat Completions 格式，支持流式和非流式 |
 | `POST /v1/messages/count_tokens` | 本地估算 token 数，不调用上游 |
 | `GET /v1/models` | 当前可用的模型列表，包括别名 |
-| `GET /api/tokens` | 只在环境变量模式下存在：只读的账号状态，不需要认证 |
+| `GET /api/tokens` | 只在[旧版环境变量模式](#旧版环境变量模式)下存在：只读的账号状态，不需要认证 |
 
 **认证**：所有 `/v1/*` 接口都要带 `Authorization: Bearer <Key>` 或 `x-api-key: <Key>`。Key 可以是 `KIRO_CLIENT_TOKEN`，也可以是管理后台创建的 API Key（仅管理模式）。
 
@@ -249,11 +237,11 @@ curl http://127.0.0.1:18080/v1/chat/completions -H "Authorization: Bearer $KIRO_
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `KIRO_ADMIN_DATA_DIR` | 不设置 | 设置后进入管理模式，值是数据目录 |
+| `KIRO_ADMIN_DATA_DIR` | compose 中固定为 `/app/data` | 数据目录，设置了就启用管理后台和账号池。用 Docker Compose 时不用写进 `.env` |
 | `KIRO_ADMIN_SECRET` | 管理模式下必填 | 管理端的 `X-Kiro-Admin-Token`，至少 32 个字符，必须和 `KIRO_CLIENT_TOKEN` 不同。不满足会启动失败 |
 | `KIRO_ADMIN_ORIGINS` | 管理模式下必填 | 允许访问后台的来源，多个用逗号分隔。只能是 https，或者 127.0.0.1 / localhost 上的 http。启动失败 |
 | `KIRO_ADMIN_BIND` | `127.0.0.1:8081` | 管理端口监听的地址 |
-| `KIRO_AUTH_TOKEN` | 空 | 环境变量模式下的账号配置，可以是 JSON 字符串或文件路径。管理模式下只在 `accounts.json` 不存在时导入一次。格式见 [auth_config.json.example](./auth_config.json.example)，字段有 `auth`（`Social` / `IdC`）、`refreshToken`、`clientId`、`clientSecret`、`disabled` |
+| `KIRO_AUTH_TOKEN` | 空 | 一般留空，在后台添加账号。填了的话，只在数据目录还没有 `accounts.json` 时导入一次，之后以后台数据为准。格式见 [auth_config.json.example](./auth_config.json.example)，字段有 `auth`（`Social` / `IdC`）、`refreshToken`、`clientId`、`clientSecret`、`disabled` |
 
 **请求处理**
 
@@ -285,7 +273,7 @@ curl http://127.0.0.1:18080/v1/chat/completions -H "Authorization: Bearer $KIRO_
 | `LOG_CONSOLE` | `true` | 只在设置了 `LOG_FILE` 时有用，`false` 表示不再输出到控制台 |
 | `LOG_ENABLE_CALLER`、`LOG_CALLER_SKIP` | 关闭、`3` | 日志里附带代码位置 |
 
-日志固定是 JSON 格式，代码不读取 `LOG_FORMAT`（`docker-compose.yml` 里仍传了这个变量，不影响运行）。
+日志固定是 JSON 格式，没有 `LOG_FORMAT` 这个配置。
 
 ---
 
@@ -339,6 +327,20 @@ go vet ./... && gofmt -l .     # 静态检查和格式检查
 | `static/admin/` | 管理后台前端，手写 HTML/JS，不需要构建 |
 
 推送 `v*` 格式的 tag 会触发 GitHub Actions，构建双架构镜像并发布到 `ghcr.io/stones-hub/kiro2api`，同时更新 `latest` 和对应的版本号别名。
+
+---
+
+## 旧版环境变量模式
+
+只为兼容老用法保留，新部署不需要关心。
+
+如果不设 `KIRO_ADMIN_DATA_DIR`，程序会进入这种模式：
+- 没有管理后台。
+- 账号只能写在 `KIRO_AUTH_TOKEN` 里（JSON 字符串或文件路径），写空了会启动失败。
+- 账号按配置顺序依次使用，没有会话粘滞和换号重试。
+- 只有 `KIRO_CLIENT_TOKEN` 一个客户端密钥。
+- 没有使用日志、错误日志和代理。
+- 主端口上只多一个只读的 `/api/tokens`，不需要认证。
 
 ---
 
