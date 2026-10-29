@@ -82,6 +82,9 @@ func handleOpenAINonStreamRequest(c *gin.Context, anthropicReq types.AnthropicRe
 		outputTokens += utils.NewTokenEstimator().EstimateTextTokens(tool.Name + string(encoded))
 	}
 	stopReason := func() string {
+		if truncatedByMaxTokens(result.Events) {
+			return "max_tokens"
+		}
 		if sawToolUse {
 			return "tool_use"
 		}
@@ -174,6 +177,7 @@ func handleOpenAIStreamRequest(c *gin.Context, anthropicReq types.AnthropicReque
 	var outputForUsage strings.Builder
 	measureUsage := anthropicReq.IncludeUsage || accountMeasurement(c) != nil
 	streamFailed := false
+	truncated := false
 
 	// 添加完整性跟踪
 	totalBytesRead := 0
@@ -201,6 +205,7 @@ func handleOpenAIStreamRequest(c *gin.Context, anthropicReq types.AnthropicReque
 					streamFailed = true
 					if dataMap, ok := event.Data.(map[string]any); ok {
 						recordUpstreamException(c, dataMap, nil, totalBytesRead, messageCount)
+						truncated = truncated || maxTokensEvent(dataMap)
 					}
 				}
 				if event.Data != nil {
@@ -442,7 +447,9 @@ func handleOpenAIStreamRequest(c *gin.Context, anthropicReq types.AnthropicReque
 	// 确保发送了结束原因（如果还没有发送）
 	if !sentFinal && messageCount > 0 {
 		finishReason := "stop"
-		if sawToolUse {
+		if truncated {
+			finishReason = "length"
+		} else if sawToolUse {
 			finishReason = "tool_calls"
 		}
 

@@ -186,7 +186,7 @@ func TestConvertAnthropicToOpenAI_StopReasonMapping(t *testing.T) {
 		expectedFinishReason string
 	}{
 		{"end_turn映射为stop", "end_turn", "stop"},
-		{"max_tokens映射为stop", "max_tokens", "stop"},
+		{"max_tokens映射为length", "max_tokens", "length"},
 		{"stop_sequence映射为stop", "stop_sequence", "stop"},
 	}
 
@@ -210,6 +210,22 @@ func TestConvertAnthropicToOpenAI_StopReasonMapping(t *testing.T) {
 			assert.Equal(t, tt.expectedFinishReason, openaiResp.Choices[0].FinishReason)
 		})
 	}
+}
+
+func TestConvertAnthropicToOpenAI_MaxTokensOutranksToolCalls(t *testing.T) {
+	anthropicResp := map[string]any{
+		"content": []map[string]any{
+			{"type": "text", "text": "partial"},
+			{"type": "tool_use", "id": "tool-1", "name": "lookup", "input": map[string]any{"q": "x"}},
+		},
+		"stop_reason": "max_tokens",
+	}
+
+	openaiResp := ConvertAnthropicToOpenAI(anthropicResp, "claude-3-sonnet-20240229", "msg_test")
+
+	assert.Equal(t, "length", openaiResp.Choices[0].FinishReason)
+	assert.Equal(t, "partial", openaiResp.Choices[0].Message.Content)
+	assert.Len(t, openaiResp.Choices[0].Message.ToolCalls, 1)
 }
 
 func TestConvertOpenAIToAnthropic_EmptyMessages(t *testing.T) {

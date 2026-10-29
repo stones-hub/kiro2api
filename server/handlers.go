@@ -395,6 +395,9 @@ func handleNonStreamRequest(c *gin.Context, anthropicReq types.AnthropicRequest,
 
 	stopReasonManager.UpdateToolCallStatus(sawToolUse, sawToolUse)
 	stopReason := stopReasonManager.DetermineStopReason()
+	if truncatedByMaxTokens(result.Events) {
+		stopReason = "max_tokens"
+	}
 
 	// logger.Debug("非流式响应stop_reason决策",
 	// 	logger.String("stop_reason", stopReason),
@@ -435,6 +438,27 @@ func handleNonStreamRequest(c *gin.Context, anthropicReq types.AnthropicRequest,
 		recordAccountSuccess(c)
 		discountAttempt.Commit()
 	}
+}
+
+// maxTokensEvent reports an exception event that ends the answer as a
+// max_tokens truncation.
+func maxTokensEvent(data map[string]any) bool {
+	if t, _ := data["type"].(string); t != "exception" {
+		return false
+	}
+	exceptionType, _ := data["exception_type"].(string)
+	return maxTokensException(exceptionType)
+}
+
+// truncatedByMaxTokens reports whether any parsed event is a max_tokens
+// exception; truncation outranks tool use as the stop reason.
+func truncatedByMaxTokens(events []parser.SSEEvent) bool {
+	for _, e := range events {
+		if data, _ := e.Data.(map[string]any); data != nil && maxTokensEvent(data) {
+			return true
+		}
+	}
+	return false
 }
 
 // createTokenPreview 创建token预览显示格式 (***+后10位)

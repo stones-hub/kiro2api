@@ -195,6 +195,9 @@ func ConvertAnthropicToOpenAI(anthropicResp map[string]any, model string, messag
 		}
 		content = strings.Join(textParts, "")
 	}
+	if stopReason, _ := anthropicResp["stop_reason"].(string); stopReason == "max_tokens" {
+		finishReason = "length"
+	}
 
 	// 计算token使用量
 	promptTokens := 0
