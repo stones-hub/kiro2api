@@ -396,11 +396,15 @@ func BuildCodeWhispererRequest(anthropicReq types.AnthropicRequest, ctx *gin.Con
 			systemContentBuilder.WriteString("\n")
 		}
 
-		// 添加原有的 system 消息
+		// 添加原有的 system 消息，每块单独清洗，删空的块整块跳过
 		if len(anthropicReq.System) > 0 {
 			for _, sysMsg := range anthropicReq.System {
 				content, err := utils.GetMessageContent(sysMsg)
 				if err == nil {
+					content, keep := sanitizeSystemBlock(content)
+					if !keep {
+						continue
+					}
 					systemContentBuilder.WriteString(content)
 					systemContentBuilder.WriteString("\n")
 				}

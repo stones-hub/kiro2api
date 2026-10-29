@@ -37,6 +37,14 @@ func main() {
 	// Unset or empty keeps the built-in statement; "off" disables injection.
 	converter.SetIdentityPrompt(os.Getenv("KIRO_IDENTITY_PROMPT"))
 
+	// Client system lines hitting sensitive words are dropped before forwarding.
+	// Unset or empty uses the built-in words; "off" disables; otherwise a file
+	// whose words are appended to the built-in ones.
+	if err := converter.SetSystemSensitiveWords(os.Getenv("KIRO_SYSTEM_SENSITIVE_WORDS")); err != nil {
+		logger.Error("system 敏感词配置加载失败", logger.Err(err))
+		os.Exit(1)
+	}
+
 	// How long a continued conversation waits for its busy account (seconds).
 	if raw, present := os.LookupEnv("KIRO_STICKY_WAIT_SECONDS"); present {
 		seconds, err := strconv.Atoi(raw)

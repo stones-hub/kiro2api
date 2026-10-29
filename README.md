@@ -341,6 +341,7 @@ KIRO_CLIENT_TOKEN=your-secure-api-key    # API 认证密钥（建议使用强密
 PORT=8080                                # 服务端口
 GIN_MODE=release                         # 运行模式：debug/release/test
 # KIRO_IDENTITY_PROMPT=off               # 身份声明注入：不设置用内置声明（默认开启）/off 关闭/其他值为自定义声明全文
+# KIRO_SYSTEM_SENSITIVE_WORDS=off        # 客户端 system 敏感词整行删除：不设置用内置规则和词（默认开启）/off 关闭/其他值为追加词表文件路径（读取失败启动退出）
 
 ```
 
